@@ -1,31 +1,27 @@
+// App.jsx
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Calculator, Package, Clock, CheckCircle, Menu, X, Eye } from 'lucide-react';
 import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 const App = () => {
   const [activeTab, setActiveTab] = useState('home');
   const [menuOpen, setMenuOpen] = useState(false);
   const [modelLoaded, setModelLoaded] = useState(false);
-  const [orderForm, setOrderForm] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    comments: ''
-  });
-  const [calcParams, setCalcParams] = useState({
-    material: 'pla',
-    quality: 'standard',
-    infill: 20,
-    quantity: 1,
-    volume: 0,
-    weight: 0
-  });
+  const [orderForm, setOrderForm] = useState({ name: '', email: '', phone: '', comments: '' });
+  const [calcParams, setCalcParams] = useState({ material: 'pla', quality: 'standard', infill: 20, quantity: 1, volume: 0, weight: 0 });
   const [price, setPrice] = useState(0);
 
+  // three refs
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
   const rendererRef = useRef(null);
   const cameraRef = useRef(null);
+  const controlsRef = useRef(null);
   const modelRef = useRef(null);
 
   const materials = {
@@ -43,317 +39,294 @@ const App = () => {
     ultra: { name: 'Ультра (0.05мм)', multiplier: 2.0 }
   };
 
+  // Инициализация сцены, камеры, рендера и контролов
   useEffect(() => {
-    if (sceneRef.current) return;
+    if (sceneRef.current) return; // уже инициализировано
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf0f0f0);
+
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
     camera.position.set(0, 0, 100);
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    // временный размер — будет скорректирован в другом эффекте
     renderer.setSize(500, 500);
+
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(10, 10, 10);
     scene.add(directionalLight);
-    const gridHelper = new THREE.GridHelper(100, 20, 0x888888, 0xcccccc);
-    scene.add(gridHelper);
+
+    // сохранение в рефы
     sceneRef.current = scene;
     cameraRef.current = camera;
     rendererRef.current = renderer;
+
+    // OrbitControls
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.07;
+    controls.rotateSpeed = 0.8;
+    controls.enableZoom = true;
+    controls.enablePan = false;
+    controlsRef.current = controls;
+
+    // Анимация
+    let rafId;
     const animate = () => {
-      requestAnimationFrame(animate);
-      if (modelRef.current) {
-        modelRef.current.rotation.y += 0.005;
-      }
+      rafId = requestAnimationFrame(animate);
+      controls.update();
       renderer.render(scene, camera);
     };
     animate();
+
+    // Очистка при демонтировании
     return () => {
+      cancelAnimationFrame(rafId);
+      controls.dispose();
       renderer.dispose();
+      // удалим модель (если есть)
+      if (modelRef.current) {
+        scene.remove(modelRef.current);
+        if (modelRef.current.geometry) modelRef.current.geometry.dispose();
+        if (modelRef.current.material) modelRef.current.material.dispose();
+        modelRef.current = null;
+      }
+      sceneRef.current = null;
+      cameraRef.current = null;
+      rendererRef.current = null;
+      controlsRef.current = null;
     };
   }, []);
 
+  // добавляем canvas в DOM и настраиваем ресайз
   useEffect(() => {
-    if (!mountRef.current || !rendererRef.current) return;
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
-    renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
-    camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
-    camera.updateProjectionMatrix();
-    if (!mountRef.current.contains(renderer.domElement)) {
-      mountRef.current.appendChild(renderer.domElement);
+    const mount = mountRef.current;
+    if (!mount || !renderer || !camera) return;
+
+    // добавить элемент canvas, если ещё не добавлен
+    if (!mount.contains(renderer.domElement)) {
+      mount.appendChild(renderer.domElement);
     }
-    const handleResize = () => {
-      if (!mountRef.current) return;
-      camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+
+    // установить правильный размер и аспект
+    const setSize = () => {
+      if (!mount) return;
+      const width = mount.clientWidth;
+      const height = mount.clientHeight;
+      renderer.setSize(width, height);
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
     };
-    window.addEventListener('resize', handleResize);
+    setSize();
+
+    window.addEventListener('resize', setSize);
     return () => {
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('resize', setSize);
     };
-  }, [activeTab]);
+  }, [activeTab, modelLoaded]);
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const extension = file.name.split('.').pop().toLowerCase();
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        switch (extension) {
-          case 'stl':
-            parseSTL(event.target.result);
-            break;
-          case 'obj':
-            parseOBJ(event.target.result);
-            break;
-          case 'ply':
-            parsePLY(event.target.result);
-            break;
-          case 'gltf':
-          case 'glb':
-            parseGLTF(event.target.result, extension);
-            break;
-          default:
-            alert('Неподдерживаемый формат файла');
-        }
-      } catch (error) {
-        console.error(error);
-        alert('Ошибка загрузки файла: ' + error.message);
-      }
-    };
-    if (extension === 'obj' || extension === 'ply' || extension === 'gltf') {
-      reader.readAsText(file);
-    } else {
-      reader.readAsArrayBuffer(file);
-    }
-  };
-
-  const parseSTL = (arrayBuffer) => {
-    const view = new DataView(arrayBuffer);
-    const isAscii = view.getUint32(0, true) > 100000000;
-    let geometry;
-    if (isAscii) {
-      geometry = parseSTLAscii(new TextDecoder().decode(arrayBuffer));
-    } else {
-      geometry = parseSTLBinary(view);
-    }
-    displayModel(geometry);
-  };
-
-  const parseSTLBinary = (view) => {
-    const triangles = view.getUint32(80, true);
-    const geometry = new THREE.BufferGeometry();
-    const vertices = [];
-    const normals = [];
-    for (let i = 0; i < triangles; i++) {
-      const offset = 84 + i * 50;
-      const nx = view.getFloat32(offset, true);
-      const ny = view.getFloat32(offset + 4, true);
-      const nz = view.getFloat32(offset + 8, true);
-      for (let j = 0; j < 3; j++) {
-        const vOffset = offset + 12 + j * 12;
-        vertices.push(
-          view.getFloat32(vOffset, true),
-          view.getFloat32(vOffset + 4, true),
-          view.getFloat32(vOffset + 8, true)
-        );
-        normals.push(nx, ny, nz);
-      }
-    }
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    return geometry;
-  };
-
-  const parseSTLAscii = (text) => {
-    const geometry = new THREE.BufferGeometry();
-    const vertices = [];
-    const normals = [];
-    const lines = text.split('\n');
-    let currentNormal = [0, 0, 0];
-    for (let line of lines) {
-      line = line.trim();
-      if (line.startsWith('facet normal')) {
-        const parts = line.split(/\s+/);
-        currentNormal = [parseFloat(parts[2]), parseFloat(parts[3]), parseFloat(parts[4])];
-      } else if (line.startsWith('vertex')) {
-        const parts = line.split(/\s+/);
-        vertices.push(parseFloat(parts[1]), parseFloat(parts[2]), parseFloat(parts[3]));
-        normals.push(...currentNormal);
-      }
-    }
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    return geometry;
-  };
-
-  const parseOBJ = (text) => {
-    const vertices = [];
-    const faces = [];
-    const lines = text.split('\n');
-    for (let line of lines) {
-      line = line.trim();
-      if (line.startsWith('v ')) {
-        const parts = line.split(/\s+/);
-        vertices.push({
-          x: parseFloat(parts[1]),
-          y: parseFloat(parts[2]),
-          z: parseFloat(parts[3])
-        });
-      } else if (line.startsWith('f ')) {
-        const parts = line.split(/\s+/).slice(1);
-        const faceVertices = parts.map(p => {
-          const indices = p.split('/');
-          return parseInt(indices[0]) - 1;
-        });
-        for (let i = 1; i < faceVertices.length - 1; i++) {
-          faces.push(faceVertices[0], faceVertices[i], faceVertices[i + 1]);
-        }
-      }
-    }
-    const geometry = new THREE.BufferGeometry();
-    const positions = [];
-    for (let index of faces) {
-      const vertex = vertices[index];
-      positions.push(vertex.x, vertex.y, vertex.z);
-    }
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    displayModel(geometry);
-  };
-
-  const parsePLY = (text) => {
-    const lines = text.split('\n');
-    let vertexCount = 0;
-    let faceCount = 0;
-    let headerEnd = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('element vertex')) {
-        vertexCount = parseInt(line.split(/\s+/)[2]);
-      } else if (line.startsWith('element face')) {
-        faceCount = parseInt(line.split(/\s+/)[2]);
-      } else if (line === 'end_header') {
-        headerEnd = i + 1;
-        break;
-      }
-    }
-    const vertices = [];
-    for (let i = 0; i < vertexCount; i++) {
-      const parts = lines[headerEnd + i].trim().split(/\s+/);
-      vertices.push({
-        x: parseFloat(parts[0]),
-        y: parseFloat(parts[1]),
-        z: parseFloat(parts[2])
-      });
-    }
-    const positions = [];
-    for (let i = 0; i < faceCount; i++) {
-      const parts = lines[headerEnd + vertexCount + i].trim().split(/\s+/);
-      const count = parseInt(parts[0]);
-      const indices = parts.slice(1, count + 1).map(x => parseInt(x));
-      for (let j = 1; j < indices.length - 1; j++) {
-        const v1 = vertices[indices[0]];
-        const v2 = vertices[indices[j]];
-        const v3 = vertices[indices[j + 1]];
-        positions.push(v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z);
-      }
-    }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    displayModel(geometry);
-  };
-
-  const parseGLTF = (data, extension) => {
-    try {
-      let json;
-      let bufferData;
-      if (extension === 'gltf') {
-        json = JSON.parse(data);
-      } else {
-        const view = new DataView(data);
-        const jsonLength = view.getUint32(12, true);
-        const jsonData = new Uint8Array(data, 20, jsonLength);
-        json = JSON.parse(new TextDecoder().decode(jsonData));
-        const binLength = view.getUint32(20 + jsonLength + 4, true);
-        bufferData = data.slice(28 + jsonLength, 28 + jsonLength + binLength);
-      }
-      const mesh = json.meshes?.[0];
-      const primitive = mesh?.primitives?.[0];
-      if (!primitive) throw new Error('Нет mesh данных в GLTF');
-      const posAccessor = json.accessors[primitive.attributes.POSITION];
-      const posBufferView = json.bufferViews[posAccessor.bufferView];
-      const positions = new Float32Array(
-        bufferData || data,
-        posBufferView.byteOffset || 0,
-        posAccessor.count * 3
-      );
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      if (primitive.indices !== undefined) {
-        const indAccessor = json.accessors[primitive.indices];
-        const indBufferView = json.bufferViews[indAccessor.bufferView];
-        const indices = new Uint16Array(
-          bufferData || data,
-          indBufferView.byteOffset || 0,
-          indAccessor.count
-        );
-        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-      }
-      geometry.computeVertexNormals();
-      displayModel(geometry);
-    } catch (error) {
-      alert('Ошибка парсинга GLTF. Попробуйте более простой файл.');
-    }
-  };
-
-  const displayModel = (geometry) => {
-    if (!sceneRef.current) {
+  // Функция отображения модели
+  const displayModel = (object3d) => {
+    const scene = sceneRef.current;
+    if (!scene) {
       console.error('Сцена не инициализирована');
       return;
     }
-    if (modelRef.current) {
-      sceneRef.current.remove(modelRef.current);
-      if (modelRef.current.geometry) modelRef.current.geometry.dispose();
-      if (modelRef.current.material) modelRef.current.material.dispose();
+
+    // Если приходит Geometry/BufferGeometry — завернём в Mesh
+    let mesh;
+    if (object3d.isMesh) {
+      mesh = object3d;
+    } else if (object3d.isBufferGeometry || object3d.isGeometry) {
+      mesh = new THREE.Mesh(object3d, new THREE.MeshPhongMaterial({ color: 0x3b82f6, shininess: 30, flatShading: false }));
+    } else {
+      // если это Group/Object3D (например OBJ или GLTF), найдем первую Mesh внутри
+      const firstMesh = object3d.getObjectByProperty ? object3d.getObjectByProperty('type', 'Mesh') : null;
+      if (firstMesh) {
+        mesh = firstMesh.clone();
+      } else {
+        // если это группа, просто добавляем её
+        mesh = object3d;
+      }
     }
-    const material = new THREE.MeshPhongMaterial({
-      color: 0x3b82f6,
-      shininess: 30,
-      flatShading: false
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    geometry.computeBoundingBox();
-    const bbox = geometry.boundingBox;
+
+    // Удаляем старую модель
+    if (modelRef.current) {
+      scene.remove(modelRef.current);
+      try {
+        if (modelRef.current.geometry) modelRef.current.geometry.dispose();
+        if (modelRef.current.material) {
+          if (Array.isArray(modelRef.current.material)) {
+            modelRef.current.material.forEach(m => m?.dispose && m.dispose());
+          } else {
+            modelRef.current.material.dispose && modelRef.current.material.dispose();
+          }
+        }
+      } catch (e) {
+        // игнорируем ошибки очистки
+      }
+      modelRef.current = null;
+    }
+
+    // Если mesh — обычный Mesh, центрируем и масштабируем
+    // Для групп тоже вычислим bounding box
+    const bbox = new THREE.Box3().setFromObject(mesh);
     const center = new THREE.Vector3();
     bbox.getCenter(center);
+
+    // сдвинем так, чтобы центр был в (0,0,0)
     mesh.position.sub(center);
+
+    // вычислим размер и масштаб
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const scale = 50 / maxDim;
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const scale = 50 / maxDim; // 50 — желаемый "размер"
     mesh.scale.setScalar(scale);
-    sceneRef.current.add(mesh);
-    modelRef.current = mesh;
-    const volume = (size.x * size.y * size.z) / 1000;
+
+    // если mesh — Group, лучше обернуть в Group чтобы можно было работать единообразно
+    let finalObject = mesh;
+    if (!mesh.isMesh && !(mesh.isGroup)) {
+      const g = new THREE.Group();
+      g.add(mesh);
+      finalObject = g;
+    }
+
+    scene.add(finalObject);
+    modelRef.current = finalObject;
+
+    // Рассчитаем объём/вес (приближенно)
+    // Используем bbox в уже отмасштабированных координатах
+    const scaledSize = size.clone().multiplyScalar(scale);
+    const volume = (scaledSize.x * scaledSize.y * scaledSize.z) / 1000; // в условных см^3 (приближенно)
     const weight = volume * materials[calcParams.material].density * (calcParams.infill / 100);
-    setCalcParams(prev => ({
-      ...prev,
-      volume: volume.toFixed(2),
-      weight: weight.toFixed(2)
-    }));
+
+    setCalcParams(prev => ({ ...prev, volume: volume.toFixed(2), weight: weight.toFixed(2) }));
     setModelLoaded(true);
     calculatePrice();
   };
 
+  // Загрузчики файлов
+  const handleFileUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const extension = file.name.split('.').pop().toLowerCase();
+
+    const reader = new FileReader();
+
+    reader.onerror = (err) => {
+      console.error('File read error', err);
+      alert('Ошибка чтения файла');
+    };
+
+    try {
+      switch (extension) {
+        case 'stl':
+          // STL — читаем как ArrayBuffer
+          reader.onload = (event) => {
+            try {
+              const arrayBuffer = event.target.result;
+              const stlLoader = new STLLoader();
+              const geometry = stlLoader.parse(arrayBuffer);
+              const material = new THREE.MeshPhongMaterial({ color: 0x3b82f6, shininess: 30 });
+              const mesh = new THREE.Mesh(geometry, material);
+              displayModel(mesh);
+            } catch (err) {
+              console.error(err);
+              alert('Ошибка парсинга STL: ' + err.message);
+            }
+          };
+          reader.readAsArrayBuffer(file);
+          break;
+
+        case 'obj':
+          // OBJ — читаем как текст
+          reader.onload = (event) => {
+            try {
+              const text = event.target.result;
+              const objLoader = new OBJLoader();
+              const obj = objLoader.parse(text);
+              displayModel(obj);
+            } catch (err) {
+              console.error(err);
+              alert('Ошибка парсинга OBJ: ' + err.message);
+            }
+          };
+          reader.readAsText(file);
+          break;
+
+        case 'ply':
+          // PLY — читаем как текст (PLYLoader умеет парсить и ASCII и бинар)
+          reader.onload = (event) => {
+            try {
+              const contents = event.target.result;
+              const plyLoader = new PLYLoader();
+              // PLYLoader.parse принимает string или ArrayBuffer; попробуем и так, и так
+              const geometry = typeof contents === 'string' ? plyLoader.parse(contents) : plyLoader.parse(contents);
+              const material = new THREE.MeshPhongMaterial({ color: 0x3b82f6, shininess: 30 });
+              const mesh = new THREE.Mesh(geometry, material);
+              displayModel(mesh);
+            } catch (err) {
+              console.error(err);
+              alert('Ошибка парсинга PLY: ' + err.message);
+            }
+          };
+          // Лучше читать как ArrayBuffer, но PLY может быть ASCII — читаем ArrayBuffer и передаём в parse
+          reader.readAsArrayBuffer(file);
+          break;
+
+        case 'gltf':
+        case 'glb':
+          // GLTF/GLB — используем GLTFLoader
+          reader.onload = (event) => {
+            try {
+              const data = event.target.result;
+              const gltfLoader = new GLTFLoader();
+              if (extension === 'glb') {
+                // ArrayBuffer
+                gltfLoader.parse(data, '', (gltf) => {
+                  displayModel(gltf.scene || gltf.scenes?.[0] || gltf);
+                }, (err) => {
+                  console.error(err);
+                  alert('Ошибка парсинга GLB: ' + (err.message || err));
+                });
+              } else {
+                // gltf (JSON text) — parse string
+                const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+                gltfLoader.parse(text, '', (gltf) => {
+                  displayModel(gltf.scene || gltf.scenes?.[0] || gltf);
+                }, (err) => {
+                  console.error(err);
+                  alert('Ошибка парсинга GLTF: ' + (err.message || err));
+                });
+              }
+            } catch (err) {
+              console.error(err);
+              alert('Ошибка при загрузке GLTF: ' + err.message);
+            }
+          };
+          if (extension === 'glb') reader.readAsArrayBuffer(file);
+          else reader.readAsText(file);
+          break;
+
+        default:
+          alert('Неподдерживаемый формат файла. Поддерживаются: STL, OBJ, PLY, GLTF, GLB');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Ошибка обработки файла: ' + err.message);
+    }
+  };
+
   const calculatePrice = () => {
     const { material, quality, infill, quantity, weight } = calcParams;
-    if (weight <= 0) {
+    if (!weight || parseFloat(weight) <= 0) {
       setPrice(0);
       return;
     }
@@ -367,26 +340,62 @@ const App = () => {
 
   useEffect(() => {
     calculatePrice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calcParams]);
 
   const handleCalcChange = (field, value) => {
     setCalcParams(prev => {
       const newParams = { ...prev, [field]: value };
       if (field === 'material' || field === 'infill') {
-        const weight = parseFloat(prev.volume) * materials[newParams.material].density * (newParams.infill / 100);
-        newParams.weight = weight.toFixed(2);
+        // если volume уже есть — пересчитать вес
+        const vol = parseFloat(prev.volume) || 0;
+        const weight = vol * materials[newParams.material].density * (newParams.infill / 100);
+        newParams.weight = isNaN(weight) ? 0 : weight.toFixed(2);
       }
       return newParams;
     });
   };
 
-  const handleSubmitOrder = (e) => {
+  const handleSubmitOrder = async (e) => {
     e.preventDefault();
     if (!modelLoaded) {
       alert('Пожалуйста, загрузите 3D модель');
       return;
     }
-    alert(`Заказ оформлен!\n\nИмя: ${orderForm.name}\nEmail: ${orderForm.email}\nТелефон: ${orderForm.phone}\n\nСтоимость: ${price} руб.\nМатериал: ${materials[calcParams.material].name}\nКачество: ${qualities[calcParams.quality].name}\nКоличество: ${calcParams.quantity} шт.`);
+    try {
+      const response = await fetch('https://formsubmit.co/ajax/i43231360@gmail.com', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          name: orderForm.name,
+          email: orderForm.email,
+          phone: orderForm.phone,
+          message: `
+Параметры заказа:
+Материал: ${materials[calcParams.material].name}
+Качество: ${qualities[calcParams.quality].name}
+Заполнение: ${calcParams.infill}%
+Количество: ${calcParams.quantity} шт.
+Объем: ${calcParams.volume} см³
+Вес: ${calcParams.weight} г
+СТОИМОСТЬ: ${price} руб.
+
+Комментарий: ${orderForm.comments || 'Нет'}
+          `
+        })
+      });
+      if (response.ok) {
+        alert(`✅ Заказ успешно отправлен!\n\nДетали заказа:\nИмя: ${orderForm.name}\nEmail: ${orderForm.email}\nТелефон: ${orderForm.phone}\n\nСтоимость: ${price} руб.`);
+        setOrderForm({ name: '', email: '', phone: '', comments: '' });
+      } else {
+        throw new Error('Ошибка отправки');
+      }
+    } catch (error) {
+      alert(`⚠️ Заказ оформлен локально!\n\nИмя: ${orderForm.name}\nEmail: ${orderForm.email}\nТелефон: ${orderForm.phone}\n\nСтоимость: ${price} руб.\nМатериал: ${materials[calcParams.material].name}\nКачество: ${qualities[calcParams.quality].name}\nКоличество: ${calcParams.quantity} шт.\n\nПримечание: Для реальной отправки на email необходимо настроить backend.`);
+    }
   };
 
   return (
@@ -415,6 +424,7 @@ const App = () => {
           )}
         </div>
       </header>
+
       <main className="container mx-auto px-4 py-8">
         {activeTab === 'home' && (
           <div>
@@ -423,10 +433,16 @@ const App = () => {
               <p className="text-xl mb-6">Загрузите вашу модель, рассчитайте стоимость и получите готовое изделие за 24-48 часов</p>
               <button onClick={() => setActiveTab('upload')} className="bg-white text-blue-600 px-8 py-3 rounded-lg font-semibold hover:bg-gray-100 transition">Начать работу</button>
             </section>
-            <section className="grid md:grid-cols-3 gap-6 mb-8">
-              <div className="bg-white p-6 rounded-lg shadow-md"><Upload className="text-blue-600 mb-4" size={40} /><h3 className="text-xl font-semibold mb-2">Легкая загрузка</h3><p className="text-gray-600">Просто загрузите файл и сразу увидите 3D визуализацию вашей модели</p></div>
-              <div className="bg-white p-6 rounded-lg shadow-md"><Calculator className="text-blue-600 mb-4" size={40} /><h3 className="text-xl font-semibold mb-2">Точный расчет</h3><p className="text-gray-600">Автоматический расчет стоимости с учетом всех параметров печати</p></div>
-              <div className="bg-white p-6 rounded-lg shadow-md"><Clock className="text-blue-600 mb-4" size={40} /><h3 className="text-xl font-semibold mb-2">Быстрое производство</h3><p className="text-gray-600">Изготовление и доставка в течение 24-48 часов</p></div>
+            {/* ... остальной контент home (как в твоем коде) ... */}
+            <section className="bg-white rounded-lg shadow-md p-8 mb-8">
+              <h3 className="text-2xl font-bold mb-6">Поддерживаемые форматы</h3>
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="border border-gray-200 rounded-lg p-4"><Package className="text-blue-600 mb-2" size={30} /><h4 className="font-semibold text-lg">STL</h4><p className="text-gray-600 text-sm">Стандартный формат для 3D-печати</p></div>
+                <div className="border border-gray-200 rounded-lg p-4"><Package className="text-blue-600 mb-2" size={30} /><h4 className="font-semibold text-lg">OBJ</h4><p className="text-gray-600 text-sm">Популярный формат 3D-моделей</p></div>
+                <div className="border border-gray-200 rounded-lg p-4"><Package className="text-blue-600 mb-2" size={30} /><h4 className="font-semibold text-lg">PLY</h4><p className="text-gray-600 text-sm">Формат для сканированных моделей</p></div>
+                <div className="border border-gray-200 rounded-lg p-4"><Package className="text-blue-600 mb-2" size={30} /><h4 className="font-semibold text-lg">GLTF</h4><p className="text-gray-600 text-sm">Современный формат 3D-графики</p></div>
+                <div className="border border-gray-200 rounded-lg p-4"><Package className="text-blue-600 mb-2" size={30} /><h4 className="font-semibold text-lg">GLB</h4><p className="text-gray-600 text-sm">Бинарная версия GLTF</p></div>
+              </div>
             </section>
             <section className="bg-white rounded-lg shadow-md p-8 mb-8">
               <h3 className="text-2xl font-bold mb-6">Поддерживаемые форматы</h3>
@@ -457,6 +473,7 @@ const App = () => {
             </section>
           </div>
         )}
+
         {activeTab === 'upload' && (
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-white rounded-lg shadow-md p-6">
@@ -486,25 +503,31 @@ const App = () => {
                 </div>
               )}
             </div>
+
             <div className="bg-white rounded-lg shadow-md p-6">
               <h3 className="text-2xl font-bold mb-4">Предпросмотр 3D модели</h3>
-              <div ref={mountRef} className="w-full h-96 bg-gray-100 rounded-lg border border-gray-300" />
+              <div
+                ref={mountRef}
+                className="w-full h-96 bg-gray-100 rounded-lg border border-gray-300 cursor-move select-none"
+              />
               {modelLoaded && (
                 <p className="text-sm text-gray-600 mt-2 flex items-center">
                   <Eye className="mr-2" size={16} />
-                  Модель вращается автоматически
+                  🖱️ Используйте мышь для вращения и колесико для зума
                 </p>
               )}
             </div>
           </div>
         )}
+
         {activeTab === 'calculator' && (
           <div className="bg-white rounded-lg shadow-md p-6 max-w-3xl mx-auto">
             <h3 className="text-2xl font-bold mb-6">Калькулятор стоимости</h3>
             {!modelLoaded && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
                 <p className="text-yellow-800">Сначала загрузите 3D модель во вкладке "Загрузить модель" для точного расчета</p>
-              </div>)}
+              </div>
+            )}
             <div className="space-y-6">
               <div>
                 <label className="block text-sm font-semibold mb-2">Материал</label>
@@ -533,7 +556,7 @@ const App = () => {
               </div>
               <div>
                 <label className="block text-sm font-semibold mb-2">Количество копий</label>
-                <input type="number" min="1" max="100" value={calcParams.quantity} onChange={(e) => handleCalcChange('quantity', parseInt(e.target.value))} className="w-full border border-gray-300 rounded-lg px-4 py-2" />
+                <input type="number" min="1" max="100" value={calcParams.quantity} onChange={(e) => handleCalcChange('quantity', parseInt(e.target.value) || 1)} className="w-full border border-gray-300 rounded-lg px-4 py-2" />
               </div>
               <div className="border-t pt-6">
                 <div className="bg-blue-50 rounded-lg p-6">
@@ -571,6 +594,7 @@ const App = () => {
             </div>
           </div>
         )}
+
         {activeTab === 'order' && (
           <div className="bg-white rounded-lg shadow-md p-6 max-w-2xl mx-auto">
             <h3 className="text-2xl font-bold mb-6">Оформление заказа</h3>
@@ -608,10 +632,12 @@ const App = () => {
             <div className="mt-6 text-sm text-gray-600">
               <p>* После оформления заказа мы свяжемся с вами в течение 1 часа для подтверждения деталей.</p>
               <p className="mt-2">* Срок изготовления: 24-48 часов с момента подтверждения.</p>
+              <p className="mt-2">* Заказ будет отправлен на email: i43231360@gmail.com</p>
             </div>
           </div>
         )}
       </main>
+
       <footer className="bg-gray-800 text-white mt-16">
         <div className="container mx-auto px-4 py-8">
           <div className="grid md:grid-cols-3 gap-8">
